@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tomato Leaf — ML Pathology Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #f8fafc; color: #0f172a; line-height: 1.6; }
+    .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 1.75rem; margin-bottom: 4px; }
+    .subtitle { color: #64748b; margin-bottom: 24px; }
+    .upload-zone { border: 2px dashed #cbd5e1; border-radius: 12px; padding: 48px; text-align: center; cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+    .upload-zone:hover, .upload-zone.dragover { border-color: #3b82f6; background: #eff6ff; }
+    .upload-zone input { display: none; }
+    .upload-icon { font-size: 3rem; margin-bottom: 12px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; border-radius: 8px; font-weight: 500; cursor: pointer; border: none; font-size: 0.9rem; }
+    .btn-primary { background: #3b82f6; color: white; }
+    .btn-secondary { background: #e2e8f0; color: #334155; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .actions { display: flex; gap: 12px; margin-top: 16px; }
+    .card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-top: 24px; }
+    .card h2 { font-size: 1.1rem; margin-bottom: 16px; color: #1e293b; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; margin-right: 8px; margin-bottom: 8px; }
+    .badge-ok { background: #dcfce7; color: #166534; }
+    .badge-warn { background: #fef3c7; color: #92400e; }
+    .badge-bad { background: #fee2e2; color: #991b1b; }
+    .badge-info { background: #dbeafe; color: #1e40af; }
+    .meter { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; margin: 8px 0 16px; }
+    .meter > div { height: 100%; border-radius: 4px; transition: width 0.3s; }
+    .meter-ok > div { background: #22c55e; }
+    .meter-warn > div { background: #f59e0b; }
+    .meter-bad > div { background: #ef4444; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 16px; }
+    .alt-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f1f5f9; }
+    .alt-row:last-child { border-bottom: none; }
+    .alt-name { font-weight: 500; }
+    .alt-pct { color: #64748b; }
+    .section { margin-top: 16px; }
+    .section h3 { font-size: 0.9rem; color: #64748b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .summary { color: #475569; }
+    .hidden { display: none; }
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #cbd5e1; border-top-color: #3b82f6; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .img-preview { max-width: 100%; max-height: 300px; border-radius: 8px; margin-top: 12px; display: none; }
+    .tabs { display: flex; gap: 4px; margin-top: 16px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; flex-wrap: wrap; }
+    .tab { padding: 8px 16px; cursor: pointer; border-radius: 8px 8px 0 0; font-size: 0.85rem; color: #64748b; }
+    .tab.active { background: #3b82f6; color: white; }
+    .tab-panel { display: none; padding: 16px 0; }
+    .tab-panel.active { display: block; }
+    .treatment-list { display: grid; gap: 8px; }
+    .treatment-item { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; }
+    .treatment-item strong { display: block; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🍅 Tomato Leaf — ML Pathology Dashboard</h1>
+    <p class="subtitle">Plant.id primary · structured verdict from Plant.id, narrative by Groq llama-3.2-90b-vision</p>
+    <div class="upload-zone" id="dropZone">
+      <div class="upload-icon">📤</div>
+      <p>Drop a leaf image here or click to browse</p>
+      <p style="font-size: 0.85rem; color: #64748b; margin-top: 4px;">JPG / PNG / WEBP · max 10MB</p>
+      <input type="file" id="fileInput" accept="image/*">
+    </div>
+    <div class="actions">
+      <button class="btn btn-primary" id="analyzeBtn" disabled><span class="spinner hidden" id="spinner"></span><span id="btnText">Analyze</span></button>
+      <button class="btn btn-secondary hidden" id="newScanBtn">New scan</button>
+    </div>
+    <img id="preview" class="img-preview" alt="Upload preview">
+    <div class="card hidden" id="heroCard">
+      <h2 id="heroTitle">—</h2>
+      <div class="meter" id="confidenceMeter"><div></div></div>
+      <div id="heroTags"></div>
+      <p class="summary" id="summary"></p>
+    </div>
+    <div class="card hidden" id="plantCard">
+      <h2>PLANT.ID VERDICT (PRIMARY STRUCTURED SOURCE)</h2>
+      <div id="plantTags"></div>
+      <p>Species: <span id="plantSpecies">—</span></p>
+      <p>Diagnosis: <span id="plantDiagnosis">—</span></p>
+      <div class="meter" id="plantMeter"><div></div></div>
+      <div class="section"><h3>Alternatives</h3><div id="plantAlts"></div></div>
+      <p style="margin-top: 12px; font-size: 0.85rem; color: #64748b;" id="plantMeta"></p>
+    </div>
+    <div class="card hidden" id="narrativeCard">
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-tab="pathology">Pathology</button>
+        <button class="tab" data-tab="symptoms">Symptoms</button>
+        <button class="tab" data-tab="differential">Differential</button>
+        <button class="tab" data-tab="organic">Organic</button>
+        <button class="tab" data-tab="chemical">Chemical</button>
+        <button class="tab" data-tab="prevention">Prevention</button>
+      </div>
+      <div class="tab-panel active" id="panel-pathology"><p id="txt-pathology">—</p></div>
+      <div class="tab-panel" id="panel-symptoms"><ul id="txt-symptoms"></ul></div>
+      <div class="tab-panel" id="panel-differential"><div id="txt-differential">—</div></div>
+      <div class="tab-panel" id="panel-organic"><div class="treatment-list" id="txt-organic"></div></div>
+      <div class="tab-panel" id="panel-chemical"><div class="treatment-list" id="txt-chemical"></div></div>
+      <div class="tab-panel" id="panel-prevention"><ul id="txt-prevention"></ul></div>
+    </div>
+  </div>
+  <script>
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const analyzeBtn = document.getElementById('analyzeBtn');
+    const btnText = document.getElementById('btnText');
+    const spinner = document.getElementById('spinner');
+    const newScanBtn = document.getElementById('newScanBtn');
+    const preview = document.getElementById('preview');
+    let currentFile = null;
+    ['dragenter','dragover'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.add('dragover'); }));
+    ['dragleave','drop'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('dragover'); }));
+    dropZone.addEventListener('drop', ev => { const f = ev.dataTransfer.files[0]; if (f) handleFile(f); });
+    dropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', ev => { if (ev.target.files[0]) handleFile(ev.target.files[0]); });
+    function handleFile(file) { if (!file.type.startsWith('image/')) return alert('Please select an image file'); currentFile = file; const url = URL.createObjectURL(file); preview.src = url; preview.style.display = 'block'; analyzeBtn.disabled = false; hideAllCards(); }
+    function hideAllCards() { ['heroCard','plantCard','narrativeCard'].forEach(id => document.getElementById(id).classList.add('hidden')); }
+    function showAllCards() { ['heroCard','plantCard','narrativeCard'].forEach(id => document.getElementById(id).classList.remove('hidden')); }
+    function badge(text, type) { const span = document.createElement('span'); span.className = `badge badge-${type}`; span.textContent = text; return span; }
+    async function analyze() { if (!currentFile) return; analyzeBtn.disabled = true; btnText.textContent = 'Analyzing...'; spinner.classList.remove('hidden'); hideAllCards(); const b64 = await fileToBase64(currentFile); try { const res = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: b64 }) }); const data = await res.json(); if (!res.ok) throw new Error(data.error || 'Analysis failed'); render(data); } catch (err) { alert('Error: ' + err.message); } finally { analyzeBtn.disabled = false; btnText.textContent = 'Analyze'; spinner.classList.add('hidden'); } }
+    function fileToBase64(file) { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]); reader.onerror = reject; reader.readAsDataURL(file); }); }
+    function render(data) { const v = data.verdict || {}; const pid = data.plantid || {}; const groq = data.groq || {}; showAllCards(); document.getElementById('heroTitle').textContent = v.diagnosis || '—'; const conf = v.confidence || 0; const meter = document.getElementById('confidenceMeter'); meter.firstElementChild.style.width = conf + '%'; meter.className = 'meter ' + (conf >= 80 ? 'meter-ok' : conf >= 50 ? 'meter-warn' : 'meter-bad'); const tags = document.getElementById('heroTags'); tags.innerHTML = ''; if (v.diagnosis_source) tags.appendChild(badge('source: ' + v.diagnosis_source, 'info')); if (v.is_plant) tags.appendChild(badge('leaf', 'ok')); else tags.appendChild(badge('not a leaf', 'bad')); if (v.crop && v.crop.toLowerCase().includes('tomato')) tags.appendChild(badge('tomato', 'ok')); tags.appendChild(badge(v.healthy ? 'healthy' : 'diseased', v.healthy ? 'ok' : 'warn')); document.getElementById('summary').textContent = v.summary || (groq.configured ? '' : 'Narrative sections are empty because the report writer is not configured.'); const pTags = document.getElementById('plantTags'); pTags.innerHTML = ''; if (pid.ok) { pTags.appendChild(badge('plant.id', 'info')); pTags.appendChild(badge(pid.is_plant ? 'is plant ' + Math.round((pid.is_plant_score||0)*100) + '%' : 'not a plant', pid.is_plant ? 'ok' : 'bad')); pTags.appendChild(badge(pid.healthy ? 'healthy' : 'diseased', pid.healthy ? 'ok' : 'warn')); } document.getElementById('plantSpecies').textContent = (pid.species || []).map(s => `${s.name} ${Math.round(s.probability*100)}%`).join(' | ') || '—'; document.getElementById('plantDiagnosis').textContent = pid.disease?.[0]?.name || '—'; const pConf = pid.disease?.[0]?.probability || 0; document.getElementById('plantMeter').firstElementChild.style.width = Math.round(pConf*100) + '%'; document.getElementById('plantMeter').className = 'meter ' + (pConf >= 0.8 ? 'meter-ok' : pConf >= 0.5 ? 'meter-warn' : 'meter-bad'); document.getElementById('plantAlts').innerHTML = (pid.disease || []).map(d => `<div class="alt-row"><span class="alt-name">${d.name}</span><span class="alt-pct">${Math.round(d.probability*100)}%</span></div>`).join('') || '—'; document.getElementById('plantMeta').textContent = `plant_id:5.1.1 · credits: check dashboard`; const verd = groq.verdict || {}; const setText = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val || '—'; }; const setHtml = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val || '—'; }; setText('txt-pathology', verd.pathology || verd.summary || '—'); setHtml('txt-symptoms', (verd.symptoms || []).map(s => `<li>${s}</li>`).join('') || '—'); setHtml('txt-differential', (verd.differential_diagnoses || []).map(d => `<div class="treatment-item"><strong>${d.disease || d}</strong><div>${d.notes || d.distinguishing || ''}</div></div>`).join('') || '—'); setHtml('txt-organic', (verd.organic_treatment || []).map(t => `<div class="treatment-item"><strong>${t.step || t}</strong><div>${t.details || t.timing || ''}</div></div>`).join('') || '—'); setHtml('txt-chemical', (verd.chemical_treatment || []).map(t => `<div class="treatment-item"><strong>${t.product || t}</strong><div>Rate: ${t.rate || 'per label'} · PHI: ${t.phi || 'per label'} · FRAC: ${t.frac || 'N/A'}</div></div>`).join('') || '—'); setHtml('txt-prevention', (verd.prevention || []).map(p => `<li>${p}</li>`).join('') || '—'); document.querySelectorAll('.tab').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(b => b.classList.remove('active')); document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active')); btn.classList.add('active'); document.getElementById('panel-' + btn.dataset.tab).classList.add('active'); }); }); }
+    analyzeBtn.addEventListener('click', analyze);
+    newScanBtn.addEventListener('click', () => { currentFile = null; fileInput.value = ''; preview.style.display = 'none'; preview.src = ''; analyzeBtn.disabled = true; newScanBtn.classList.add('hidden'); hideAllCards(); dropZone.classList.remove('dragover'); });
+  </script>
+</body>
+</html>

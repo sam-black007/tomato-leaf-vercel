@@ -1,0 +1,15 @@
+{
+  "buildCommand": "pip install -r requirements.txt",
+  "outputDirectory": "static",
+  "devCommand": "python api/index.py",
+  "framework": "flask",
+  "functions": {
+    "api/*.py": {
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1" },
+    { "src": "/(.*)", "dest": "/static/$1" }
+  ]
+}
