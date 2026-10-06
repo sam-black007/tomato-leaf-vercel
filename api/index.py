@@ -35,10 +35,13 @@ VISION_FALLBACK_MODELS = tuple(
 PLANT_ID_URL = "https://api.plant.id/v3/identification"
 MAX_IMAGE_BYTES = 3_500_000
 
+# Only these fields may be taken from the narrative model. Deliberately absent:
+# diagnosis, crop, species, healthy, probability, confidence, is_plant,
+# model_version, category and pathogen. Those are Plant.id's to decide, and a
+# narrative model inventing its own category or pathogen is exactly how a report
+# ends up contradicting its own headline.
 NARRATIVE_FIELDS = (
     "summary",
-    "pathogen",
-    "category",
     "severity",
     "symptoms",
     "affected_parts",
@@ -320,6 +323,7 @@ def merge_verdict(plantid, groq):
                 "probability": probability,
                 "confidence": int(round((probability or 0) * 100)),
                 "category": plantid.get("category") or _category_for(plantid.get("diagnosis")),
+                "pathogen": (plantid.get("disease") or [{}])[0].get("name"),
                 "model_version": plantid.get("model_version"),
             }
         )
@@ -343,8 +347,6 @@ def merge_verdict(plantid, groq):
 
     if plantid.get("ok") and not v.get("summary"):
         v["summary"] = "Structured analysis returned no narrative text."
-    if plantid.get("ok") and not v.get("pathogen"):
-        v["pathogen"] = (plantid.get("disease") or [{}])[0].get("name")
 
     v["narrative_ok"] = bool(groq.get("configured"))
     v["narrative_error"] = groq.get("error")
