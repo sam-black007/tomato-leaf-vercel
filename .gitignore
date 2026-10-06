@@ -7,3 +7,4 @@ run_local.bat
 .venv/
 venv/
 `$null
+.vercel
