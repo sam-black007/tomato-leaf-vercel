@@ -211,9 +211,14 @@ def _category_for(disease_name):
     name = str(disease_name or "").lower()
     if not name:
         return "Unknown"
+    # These are matched as substrings against the raw Plant.id disease name, so
+    # they must include the names the API actually returns, not just textbook
+    # synonyms. "Early blight" was missing and classified as Unknown.
     fungal = (
         "alternaria", "septoria", "botrytis", "powdery", "downy", "fusarium",
         "anthracnose", "rust", "scab", "leaf spot", "leaf blight", "penicillium",
+        "early blight", "black spot", "brown spot", "tar spot", "sooty mould",
+        "sooty mold", "galls", "canker", "sclerotinia", "phytophthora fruit rot",
     )
     bacterial = ("bacterial", "xanthomonas", "pseudomonas", "erwinia", "peb")
     viral = ("virus", "viral", "mosaic", "yellow leaf curl", "tomato yellow")
