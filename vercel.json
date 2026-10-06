@@ -10,5 +10,19 @@
     { "src": "/api/analyze", "dest": "/api/index.py" },
     { "src": "/api/crosscheck", "dest": "/api/index.py" },
     { "src": "/health", "dest": "/api/index.py" }
+  ],
+  "headers": [
+    {
+      "source": "/local-model.js",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600" }
+      ]
+    },
+    {
+      "source": "/models/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }
+      ]
+    }
   ]
 }

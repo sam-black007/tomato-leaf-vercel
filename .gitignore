@@ -8,3 +8,6 @@ run_local.bat
 venv/
 `$null
 .vercel
+static/models/*.onnx
+static/models/*.pt
+export/

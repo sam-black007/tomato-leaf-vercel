@@ -111,6 +111,12 @@
       <div class="tab-panel" id="panel-chemical"><div class="treatment-list" id="txt-chemical"></div></div>
       <div class="tab-panel" id="panel-prevention"><ul id="txt-prevention"></ul></div>
     </div>
+    <div class="card hidden" id="localCard">
+      <h2>ON-DEVICE SECOND OPINION (OPTIONAL)</h2>
+      <p class="muted">Runs entirely in this browser. No key, no quota, works offline once cached. Trained on studio-lit PlantVillage images, so treat it as a weaker opinion than Plant.id.</p>
+      <button class="btn btn-secondary" id="localBtn">Run local model</button>
+      <div id="localOut"></div>
+    </div>
   </div>
   <script>
     const dropZone = document.getElementById('dropZone');
@@ -121,13 +127,43 @@
     const newScanBtn = document.getElementById('newScanBtn');
     const preview = document.getElementById('preview');
     let currentFile = null;
+    let lastVerdict = null;
+    /* On-device model is opt-in and additive. Plant.id remains the primary
+     * structured source no matter what the local model reports. */
+    import('./local-model.js').then(m => {
+      window.__localModel = m;
+      const lb = document.getElementById('localBtn');
+      if (lb) lb.addEventListener('click', onLocalClassify);
+    }).catch(() => { const lb = document.getElementById('localBtn'); if (lb) lb.title = 'local-model.js unavailable'; });
+
+    async function onLocalClassify() {
+      const lo = document.getElementById('localOut');
+      const lb = document.getElementById('localBtn');
+      if (!window.__localModel || !currentFile) return;
+      lb.disabled = true; lb.textContent = 'Loading model...';
+      lo.innerHTML = '<p class="muted">First run downloads the model, then it is cached for offline use.</p>';
+      try {
+        const file = window.__localModelFile || '/models/leaf_model_int8.onnx';
+        window.__localModel.configureLocalModel(file, '/models/labels.json');
+        const res = await window.__localModel.classifyLocal(currentFile);
+        const cmp = window.__localModel.compareWithPlantId(res, lastVerdict);
+        const rows = (res.top3 || []).map(r => '<li><strong>' + esc(r.label.replace('___', ' — ')) + '</strong> ' + Math.round(r.probability * 100) + '%</li>').join('');
+        let ft = '';
+        if (res.field_top1 != null) ft = '<p class="muted">Measured field-photo top-1 on held-out real photos: <strong>' + Math.round(res.field_top1 * 100) + '%</strong></p>';
+        lo.innerHTML = '<p><strong>Local model says:</strong> ' + esc(res.top.label.replace('___', ' — ')) + ' (' + Math.round(res.top.probability * 100) + '%)</p><ul>' + rows + '</ul>' + ft + (cmp ? '<p class="muted">' + esc(cmp.summary) + '</p>' : '');
+      } catch (err) {
+        lo.innerHTML = '<p class="muted">Local model unavailable: ' + esc(err.message) + '. Plant.id results above are unaffected.</p>';
+      } finally {
+        lb.disabled = !currentFile; lb.textContent = 'Run local model';
+      }
+    }
     ['dragenter','dragover'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.add('dragover'); }));
     ['dragleave','drop'].forEach(e => dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.classList.remove('dragover'); }));
     dropZone.addEventListener('drop', ev => { const f = ev.dataTransfer.files[0]; if (f) handleFile(f); });
     dropZone.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', ev => { if (ev.target.files[0]) handleFile(ev.target.files[0]); });
     function handleFile(file) { if (!file.type.startsWith('image/')) return alert('Please select an image file'); currentFile = file; const url = URL.createObjectURL(file); preview.src = url; preview.style.display = 'block'; analyzeBtn.disabled = false; hideAllCards(); }
-    function hideAllCards() { ['heroCard','caseCard','plantCard','narrativeCard'].forEach(id => document.getElementById(id).classList.add('hidden')); }
+    function hideAllCards() { ['heroCard','caseCard','plantCard','narrativeCard','localCard'].forEach(id => document.getElementById(id).classList.add('hidden')); }
     function showAllCards() { ['heroCard','caseCard','plantCard','narrativeCard'].forEach(id => document.getElementById(id).classList.remove('hidden')); }
     function badge(text, type) { const span = document.createElement('span'); span.className = `badge badge-${type}`; span.textContent = text; return span; }
     async function analyze() { if (!currentFile) return; analyzeBtn.disabled = true; btnText.textContent = 'Analyzing...'; spinner.classList.remove('hidden'); hideAllCards(); const b64 = await fileToBase64(currentFile); try { const res = await fetch('/api/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: b64 }) }); const data = await res.json(); if (!res.ok) throw new Error(data.error || 'Analysis failed'); render(data); } catch (err) { alert('Error: ' + err.message); } finally { analyzeBtn.disabled = false; btnText.textContent = 'Analyze'; spinner.classList.add('hidden'); } }
@@ -186,6 +222,26 @@
       pm.className = 'meter ' + (pConf >= 0.8 ? 'meter-ok' : pConf >= 0.5 ? 'meter-warn' : 'meter-bad');
       document.getElementById('plantAlts').innerHTML = (pid.disease || []).map(d => '<div class="alt-row"><span class="alt-name">' + esc(d.name) + '</span><span class="alt-pct">' + Math.round((d.probability || 0) * 100) + '%</span></div>').join('') || '<span class="muted">None</span>';
       document.getElementById('plantMeta').textContent = (pid.model_version || 'plant.id') + (pid.status ? ' · HTTP ' + pid.status : '') + ' · credits used: see kindwise dashboard';
+      lastVerdict = v;
+      const lb = document.getElementById('localBtn');
+      const lo = document.getElementById('localOut');
+      if (lb) lb.disabled = !currentFile;
+      if (lo) lo.innerHTML = '';
+      /* Only offer the card once real weights exist. A bare status check is not
+       * enough: the static host answers missing paths with index.html and a 200,
+       * so the response must actually parse as the labels object we expect. */
+      if (!window.__localProbed) {
+        window.__localProbed = fetch('/models/labels.json')
+          .then(r => { if (!r.ok) throw new Error('missing'); return r.json(); })
+          .then(meta => {
+            if (!meta || !Array.isArray(meta.classes) || meta.classes.length < 2) throw new Error('malformed');
+            window.__localLabels = meta;
+            /* Prefer the quantized weights when the export produced them. */
+            window.__localModelFile = meta.onnx_file || '/models/leaf_model_int8.onnx';
+            document.getElementById('localCard').classList.remove('hidden');
+          })
+          .catch(() => {});
+      }
       renderNarrative(v);
       const ns = document.getElementById('newScanBtn'); if (ns) ns.classList.remove('hidden');
       document.querySelectorAll('.tab').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.tab').forEach(b => b.classList.remove('active')); document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active')); btn.classList.add('active'); document.getElementById('panel-' + btn.dataset.tab).classList.add('active'); }));
