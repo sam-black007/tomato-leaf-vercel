@@ -13,13 +13,24 @@ app = Flask(__name__, static_folder=None)
 
 VISION_API_KEY = os.environ.get("VISION_API_KEY")
 VISION_BASE_URL = os.environ.get("VISION_BASE_URL", "https://api.groq.com/openai/v1")
-VISION_MODEL = os.environ.get("VISION_MODEL", "qwen/qwen3.8-27b")
+VISION_MODEL = os.environ.get("VISION_MODEL", "gemini-3.5-flash")
 PLANT_ID_API_KEY = os.environ.get("PLANT_ID_API_KEY")
 
-# Groq currently serves no vision-capable model, so Plant.id is the only engine
-# that looks at pixels. The narrative model receives Plant.id's structured
-# output as text. Set VISION_SUPPORTS_IMAGES=1 only if a vision model is served.
-VISION_SUPPORTS_IMAGES = os.environ.get("VISION_SUPPORTS_IMAGES", "0") == "1"
+# Plant.id is the primary engine. The narrative model sees the photo only when
+# the configured provider actually serves a vision model. Groq currently serves
+# none, so it runs text-only on Plant.id's structured output; Gemini does, so it
+# runs with the image attached.
+VISION_SUPPORTS_IMAGES = os.environ.get("VISION_SUPPORTS_IMAGES", "1") == "1"
+
+# Gemini regularly returns 503 "high demand" on individual models, so try each
+# candidate in turn before giving up on the narrative.
+VISION_FALLBACK_MODELS = tuple(
+    m.strip()
+    for m in os.environ.get(
+        "VISION_FALLBACK_MODELS", "gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3-flash-preview"
+    ).split(",")
+    if m.strip()
+)
 
 PLANT_ID_URL = "https://api.plant.id/v3/identification"
 MAX_IMAGE_BYTES = 3_500_000
@@ -65,13 +76,44 @@ Write a grounded, practical report using this exact JSON shape:
 }
 
 Rules:
-- You did NOT see the photograph. Work only from the Plant.id output given to you.
 - If confidence is below 50 percent, say so plainly and present differentials as genuinely open.
 - Prefer cultural, sanitation and environmental controls over pesticides.
 - Never invent a product brand or a dosage.
-- Do not describe leaf markings, colours or textures you were not told about.
 - Return ONLY the JSON object, no markdown fences, no commentary.
 """
+
+VISION_RULES = """- You were given the photograph. Describe only what you can actually see in it
+  (colour, pattern, distribution of lesions, leaf condition) and tie those observations
+  to the report. Put those observations in "evidence".
+- If the photograph is not a leaf, or is too unclear to read, say so plainly and lower
+  your certainty instead of guessing."""
+
+
+def _narrative_prompt():
+    if VISION_SUPPORTS_IMAGES:
+        return NARRATIVE_PROMPT.replace(
+            "- Return ONLY the JSON object",
+            VISION_RULES + "\n- Return ONLY the JSON object",
+        )
+    return NARRATIVE_PROMPT.replace(
+        "- Return ONLY the JSON object",
+        "- You did NOT see the photograph. Work only from the Plant.id output given to you.\n"
+        "- Do not describe leaf markings, colours or textures you were not told about.\n"
+        "- Return ONLY the JSON object",
+    )
+
+
+def _provider_name():
+    host = VISION_BASE_URL.lower()
+    if "generativelanguage" in host:
+        return "gemini"
+    if "groq" in host:
+        return "groq"
+    if "openai" in host:
+        return "openai"
+    if "anthropic" in host:
+        return "anthropic"
+    return "narrative-model"
 
 
 def _category_for(disease_name):
@@ -211,33 +253,49 @@ def groq_narrative(image_b64, plantid_result):
         ]
 
     client = OpenAI(api_key=VISION_API_KEY, base_url=VISION_BASE_URL)
-    try:
-        resp = client.chat.completions.create(
-            model=VISION_MODEL,
-            messages=[
-                {"role": "system", "content": NARRATIVE_PROMPT},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.2,
-            max_tokens=1600,
-            response_format={"type": "json_object"},
-        )
-    except Exception as exc:
-        return {"configured": False, "error": f"{type(exc).__name__}: {exc}"}
+    candidates = [VISION_MODEL] + [m for m in VISION_FALLBACK_MODELS if m != VISION_MODEL]
 
-    text = (resp.choices[0].message.content or "").strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return {"configured": False, "error": "Narrative model did not return JSON"}
-    try:
-        parsed = json.loads(match.group())
-    except json.JSONDecodeError as exc:
-        return {"configured": False, "error": f"Narrative JSON invalid: {exc}"}
+    parsed = None
+    used_model = None
+    errors = []
+    for model in candidates:
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _narrative_prompt()},
+                    {"role": "user", "content": user_content},
+                ],
+                temperature=0.2,
+                # Gemini 3.x spends part of the budget on thinking tokens, so a
+                # small cap truncates the JSON mid-object.
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            errors.append(f"{model}: {type(exc).__name__}: {exc}")
+            continue
+
+        text = (resp.choices[0].message.content or "").strip()
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not match:
+            errors.append(f"{model}: no JSON in response")
+            continue
+        try:
+            parsed = json.loads(match.group())
+            used_model = model
+            break
+        except json.JSONDecodeError as exc:
+            errors.append(f"{model}: invalid JSON ({exc})")
+
+    if parsed is None:
+        return {"configured": False, "error": " | ".join(errors)[:800]}
 
     return {
         "configured": True,
-        "provider": "groq",
-        "model": VISION_MODEL,
+        "provider": _provider_name(),
+        "model": used_model,
+        "sees_image": VISION_SUPPORTS_IMAGES,
         "verdict": {k: parsed.get(k) for k in NARRATIVE_FIELDS},
     }
 
@@ -334,7 +392,7 @@ def analyze():
     payload = {
         "verdict": verdict,
         "plantid": plantid,
-        "groq": {k: v for k, v in narrative.items() if k != "verdict"},
+        "narrative": {k: v for k, v in narrative.items() if k != "verdict"},
     }
     if not plantid.get("ok") and not narrative.get("configured"):
         return jsonify(payload), 502
