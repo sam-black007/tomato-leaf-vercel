@@ -3,9 +3,10 @@
 ## Deploy
 ```bash
 cd vercel-app
-git init && git add . && git commit -m "Vercel-only deploy"
-# Push to GitHub, then import in Vercel
+git add . && git commit -m "Vercel-only deploy"
+git push -u origin master
 ```
+Then import the repo at https://vercel.com/new and add the env vars below.
 
 ## Vercel Settings
 - **Framework**: Flask (auto-detected)
@@ -13,13 +14,13 @@ git init && git add . && git commit -m "Vercel-only deploy"
 - **Output Directory**: `static`
 - **Function Timeout**: 30s (set in vercel.json)
 
-## Environment Variables (set in Vercel dashboard)
+## Environment Variables (set in Vercel dashboard — never commit real keys)
 | Variable | Value |
 |---|---|
-| `VISION_API_KEY` | `gsk_YOUR_GROQ_KEY` |
+| `VISION_API_KEY` | your Groq API key (`gsk_...`) |
 | `VISION_BASE_URL` | `https://api.groq.com/openai/v1` |
-| `VISION_MODEL` | `llama-3.2-90b-vision-preview` |
-| `PLANT_ID_API_KEY` | *(set in Vercel dashboard — never commit)* |
+| `VISION_MODEL` | a vision-capable model currently listed by `GET /openai/v1/models` |
+| `PLANT_ID_API_KEY` | your Plant.id API key |
 
 ## What's Included
 - `/api/analyze` → Plant.id (2 credits) + Groq narrative → merged JSON
