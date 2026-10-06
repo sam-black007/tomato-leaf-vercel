@@ -91,19 +91,107 @@ VISION_RULES = """- You were given the photograph. Describe only what you can ac
 - If the photograph is not a leaf, or is too unclear to read, say so plainly and lower
   your certainty instead of guessing."""
 
+# The narrative is written per live case, not from a fixed template. Each branch
+# tells the model what is actually true about this reading and therefore what the
+# report is allowed to conclude.
+CASE_INSTRUCTIONS = {
+    "plantid_unavailable": """THIS CASE: the structured engine failed, so you have no numbers.
+Do not name a disease, a crop or a pathogen. Say plainly that the image could not be
+analysed and explain what to try instead. severity "Unknown", urgency "Routine",
+contagious null, and leave the treatment lists as generic hygiene only.""",
+    "not_a_plant": """THIS CASE: the structured engine does not believe this is a plant leaf.
+Do NOT name any disease, pathogen or crop, even if the photograph looks leafy. Tell the
+user what a useful photo would be instead (a single flat leaf, close-up, good light, no
+background clutter). severity "Unknown", urgency "Routine", contagious null, and keep the
+treatment lists empty rather than inventing advice for a non-leaf.""",
+    "healthy": """THIS CASE: the structured engine reports the leaf as HEALTHY, with high
+probability. This is a prevention and monitoring report, not a treatment report.
+Do NOT recommend fungicides, bactericides or any disease treatment. Explain what "healthy
+here" actually means, the conditions that would keep it that way, and the specific early
+warning signs worth watching on this crop. contagious false, urgency "Routine",
+severity "Mild". Put your visible observations in "evidence" so the user can sanity-check
+the healthy call.""",
+    "diseased_confident": """THIS CASE: a disease is detected and the top candidate is clearly
+separated from the runner-up. Give a direct, specific, actionable plan. Name the one thing
+the user should do first. Still state the confidence figure honestly.""",
+    "diseased_moderate": """THIS CASE: a disease is detected with middling confidence and a
+credible runner-up. Give the treatment plan, but name the runner-up explicitly and state
+the single observation that would separate the two causes. Do not present the top result
+as settled.""",
+    "diseased_uncertain": """THIS CASE: disease is indicated but confidence is LOW and the top
+candidates are close together. The correct report is an honest unresolved one.
+- Do NOT present a single confident diagnosis.
+- Weigh each of the top candidates against the others and say what is genuinely in dispute.
+- Put the low confidence in the first sentence of "summary", not buried in "notes".
+- Set urgency to "Monitor closely" and say the practical next step is a better photo
+  (close-up of one lesion, plus the whole leaf, plus the underside), not a spray.
+- Keep chemical_treatment empty unless it is warranted across most of your candidates.""",
+}
 
-def _narrative_prompt():
+
+def _rank_margin(ranking):
+    probs = [r.get("probability") for r in (ranking or []) if isinstance(r.get("probability"), (int, float))]
+    if len(probs) < 2:
+        return None
+    return round(probs[0] - probs[1], 4)
+
+
+def _live_signals(plantid):
+    """The raw numbers the narrative and the UI are allowed to reason from."""
+    species = plantid.get("species") or []
+    diseases = plantid.get("disease") or []
+    top = diseases[0].get("probability") if diseases else None
+    return {
+        "top_disease_probability": top,
+        "runner_up_probability": diseases[1].get("probability") if len(diseases) > 1 else None,
+        "margin_over_runner_up": _rank_margin(diseases),
+        "crop_confidence": species[0].get("probability") if species else None,
+        "crop_margin": _rank_margin(species),
+        "plant_probability": plantid.get("is_plant_score"),
+        "health_probability": plantid.get("healthy_score"),
+        "crop_is_confident": bool(
+            len(species) > 1
+            and isinstance(species[0].get("probability"), (int, float))
+            and (species[0]["probability"] - species[1]["probability"]) >= 0.10
+        ),
+    }
+
+
+def _classify_case(plantid):
+    signals = _live_signals(plantid)
+    if not plantid.get("ok"):
+        case = "plantid_unavailable"
+    elif not plantid.get("is_plant"):
+        case = "not_a_plant"
+    elif plantid.get("healthy"):
+        case = "healthy"
+    else:
+        top = signals["top_disease_probability"] or 0.0
+        margin = signals["margin_over_runner_up"]
+        # Calibrated against real Plant.id output. A single candidate near 40%
+        # with a 10% margin over the runner-up is genuinely unresolved, so the
+        # confidence floor sits at 0.45 rather than being optimistic.
+        if top >= 0.60 and (margin is None or margin >= 0.15):
+            case = "diseased_confident"
+        elif top >= 0.45:
+            case = "diseased_moderate"
+        else:
+            case = "diseased_uncertain"
+    return case, signals
+
+
+def _narrative_prompt(case):
+    parts = [NARRATIVE_PROMPT]
     if VISION_SUPPORTS_IMAGES:
-        return NARRATIVE_PROMPT.replace(
-            "- Return ONLY the JSON object",
-            VISION_RULES + "\n- Return ONLY the JSON object",
+        parts.append(VISION_RULES)
+    else:
+        parts.append(
+            "- You did NOT see the photograph. Work only from the Plant.id output given to you.\n"
+            "- Do not describe leaf markings, colours or textures you were not told about."
         )
-    return NARRATIVE_PROMPT.replace(
-        "- Return ONLY the JSON object",
-        "- You did NOT see the photograph. Work only from the Plant.id output given to you.\n"
-        "- Do not describe leaf markings, colours or textures you were not told about.\n"
-        "- Return ONLY the JSON object",
-    )
+    parts.append(CASE_INSTRUCTIONS.get(case, CASE_INSTRUCTIONS["diseased_moderate"]))
+    parts.append("- Return ONLY the JSON object, no markdown fences, no commentary.")
+    return "\n".join(parts)
 
 
 def _provider_name():
@@ -205,11 +293,15 @@ def plant_id_identify(image_b64, health="auto"):
     }
 
 
-def groq_narrative(image_b64, plantid_result):
+def groq_narrative(image_b64, plantid_result, case=None):
     if not VISION_API_KEY:
         return {"configured": False, "error": "VISION_API_KEY is not configured"}
 
-    ctx = ["Plant.id structured analysis is the source of truth for this report."]
+    case = case or _classify_case(plantid_result)[0]
+    ctx = [
+        "Plant.id structured analysis is the source of truth for this report.",
+        f"Case: {case}. Write the report for THIS case, following its instructions.",
+    ]
     if plantid_result.get("ok"):
         prob = plantid_result.get("probability")
         prob_txt = f" ({prob:.0%})" if isinstance(prob, (int, float)) else ""
@@ -235,6 +327,15 @@ def groq_narrative(image_b64, plantid_result):
                     if d.get("name") and isinstance(d.get("probability"), (int, float))
                 )
             )
+        signals = _live_signals(plantid_result)
+        ctx.append(
+            "Margin between top disease and runner-up: "
+            + (f"{signals['margin_over_runner_up']:.0%}" if signals["margin_over_runner_up"] is not None else "unknown")
+        )
+        ctx.append(
+            "Crop identification is "
+            + ("confident." if signals["crop_is_confident"] else "NOT confident, the ranking is split.")
+        )
         top = plantid_result.get("probability")
         ctx.append(
             f"Top confidence: {top:.0%}" if isinstance(top, (int, float)) else "Top confidence: unknown"
@@ -266,7 +367,7 @@ def groq_narrative(image_b64, plantid_result):
             resp = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": _narrative_prompt()},
+                    {"role": "system", "content": _narrative_prompt(case)},
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.2,
@@ -385,8 +486,11 @@ def analyze():
             return jsonify({"error": "Image too large. Use a JPEG under ~2.5 MB."}), 413
 
         plantid = plant_id_identify(image_b64)
-        narrative = groq_narrative(image_b64, plantid)
+        case, signals = _classify_case(plantid)
+        narrative = groq_narrative(image_b64, plantid, case)
         verdict = merge_verdict(plantid, narrative)
+        verdict["case"] = case
+        verdict["live_signals"] = signals
     except Exception as exc:
         app.logger.exception("analyze failed")
         return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
