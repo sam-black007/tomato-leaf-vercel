@@ -13,8 +13,13 @@ app = Flask(__name__, static_folder=None)
 
 VISION_API_KEY = os.environ.get("VISION_API_KEY")
 VISION_BASE_URL = os.environ.get("VISION_BASE_URL", "https://api.groq.com/openai/v1")
-VISION_MODEL = os.environ.get("VISION_MODEL", "llama-3.2-11b-vision-preview")
+VISION_MODEL = os.environ.get("VISION_MODEL", "qwen/qwen3.8-27b")
 PLANT_ID_API_KEY = os.environ.get("PLANT_ID_API_KEY")
+
+# Groq currently serves no vision-capable model, so Plant.id is the only engine
+# that looks at pixels. The narrative model receives Plant.id's structured
+# output as text. Set VISION_SUPPORTS_IMAGES=1 only if a vision model is served.
+VISION_SUPPORTS_IMAGES = os.environ.get("VISION_SUPPORTS_IMAGES", "0") == "1"
 
 PLANT_ID_URL = "https://api.plant.id/v3/identification"
 MAX_IMAGE_BYTES = 3_500_000
@@ -60,9 +65,11 @@ Write a grounded, practical report using this exact JSON shape:
 }
 
 Rules:
+- You did NOT see the photograph. Work only from the Plant.id output given to you.
 - If confidence is below 50 percent, say so plainly and present differentials as genuinely open.
 - Prefer cultural, sanitation and environmental controls over pesticides.
 - Never invent a product brand or a dosage.
+- Do not describe leaf markings, colours or textures you were not told about.
 - Return ONLY the JSON object, no markdown fences, no commentary.
 """
 
@@ -173,8 +180,35 @@ def groq_narrative(image_b64, plantid_result):
             )
         ctx.append(f"Healthy: {plantid_result.get('healthy')}")
         ctx.append(f"Is plant: {plantid_result.get('is_plant')}")
+        diseases = plantid_result.get("disease") or []
+        if diseases:
+            ctx.append(
+                "Disease ranking: "
+                + ", ".join(
+                    f"{d['name']} ({d['probability']:.0%})"
+                    for d in diseases
+                    if d.get("name") and isinstance(d.get("probability"), (int, float))
+                )
+            )
+        top = plantid_result.get("probability")
+        ctx.append(
+            f"Top confidence: {top:.0%}" if isinstance(top, (int, float)) else "Top confidence: unknown"
+        )
     else:
-        ctx.append("Plant.id was unavailable, so base the narrative on the image alone.")
+        ctx.append(
+            "Plant.id was unavailable, so no structured evidence is available. "
+            "Say so in the summary instead of guessing."
+        )
+
+    user_content = "\n".join(ctx)
+    if VISION_SUPPORTS_IMAGES:
+        user_content = [
+            {"type": "text", "text": user_content},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+            },
+        ]
 
     client = OpenAI(api_key=VISION_API_KEY, base_url=VISION_BASE_URL)
     try:
@@ -182,16 +216,7 @@ def groq_narrative(image_b64, plantid_result):
             model=VISION_MODEL,
             messages=[
                 {"role": "system", "content": NARRATIVE_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "\n".join(ctx)},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
-                        },
-                    ],
-                },
+                {"role": "user", "content": user_content},
             ],
             temperature=0.2,
             max_tokens=1600,
@@ -277,23 +302,34 @@ def health():
             "plantid_configured": bool(PLANT_ID_API_KEY),
             "narrative_configured": bool(VISION_API_KEY),
             "narrative_model": VISION_MODEL if VISION_API_KEY else None,
+            "narrative_sees_image": VISION_SUPPORTS_IMAGES,
         }
     )
 
 
+@app.errorhandler(Exception)
+def on_unhandled_error(exc):
+    app.logger.exception("unhandled error")
+    return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict) or not data.get("image"):
-        return jsonify({"error": "Missing image (base64 string)"}), 400
+    try:
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or not data.get("image"):
+            return jsonify({"error": "Missing image (base64 string)"}), 400
 
-    image_b64 = data["image"]
-    if len(image_b64) > MAX_IMAGE_BYTES:
-        return jsonify({"error": "Image too large. Use a JPEG under ~2.5 MB."}), 413
+        image_b64 = data["image"]
+        if len(image_b64) > MAX_IMAGE_BYTES:
+            return jsonify({"error": "Image too large. Use a JPEG under ~2.5 MB."}), 413
 
-    plantid = plant_id_identify(image_b64)
-    narrative = groq_narrative(image_b64, plantid)
-    verdict = merge_verdict(plantid, narrative)
+        plantid = plant_id_identify(image_b64)
+        narrative = groq_narrative(image_b64, plantid)
+        verdict = merge_verdict(plantid, narrative)
+    except Exception as exc:
+        app.logger.exception("analyze failed")
+        return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
     payload = {
         "verdict": verdict,

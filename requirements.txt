@@ -3,3 +3,7 @@ gunicorn==23.0.0
 requests==2.32.3
 python-dotenv==1.0.1
 openai==1.54.3
+# openai 1.54.x passes `proxies=` to httpx, which was removed in httpx 0.28.
+# Without this pin the deployed function dies with
+# "TypeError: Client.__init__() got an unexpected keyword argument 'proxies'".
+httpx==0.27.2

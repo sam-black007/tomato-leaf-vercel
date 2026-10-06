@@ -16,10 +16,29 @@ Groq writes the narrative only. Groq can never overwrite the structured fields.
 ## Architecture
 - UI is a single self-contained `static/index.html` served by Vercel's CDN.
 - One Python function, `api/index.py`, handles every API route (see `vercel.json`).
-- Plant.id: `POST https://api.plant.id/v3/identification`, header `Api-Key`,
-  body `{"images":[base64],"health":"auto"}`. Success is **HTTP 201**, so all 2xx
-  codes are accepted.
-- Groq: OpenAI-compatible endpoint at `https://api.groq.com/openai/v1`.
+- Plant.id is the **only** engine that looks at pixels. Success is **HTTP 201**,
+  so all 2xx codes are accepted.
+- Groq is the narrative writer and is **text-only** (see below).
+
+### Groq has no vision model
+`GET https://api.groq.com/openai/v1/models` returns no vision-capable model, and
+direct calls fail:
+
+| Model | Result |
+|---|---|
+| `llama-3.2-90b-vision-preview` | `model_decommissioned` |
+| `llama-3.2-11b-vision-preview` | `model_decommissioned` |
+| `meta-llama/llama-4-scout-17b-16e-instruct` | `model_not_found` |
+| `qwen/qwen3.8-27b` | works (text only) |
+
+So the narrative prompt is explicitly told it did **not** see the photograph and
+must work only from Plant.id's structured output. `VISION_SUPPORTS_IMAGES=1`
+re-enables image attachment if a vision model is served again.
+
+### httpx pin
+`openai==1.54.3` passes `proxies=` to httpx, removed in httpx 0.28. `httpx==0.27.2`
+is pinned in `requirements.txt`; without it every deployed call dies with
+`TypeError: Client.__init__() got an unexpected keyword argument 'proxies'`.
 
 ## Merge contract
 Structured fields always come from Plant.id: `diagnosis`, `crop`, `species`,
