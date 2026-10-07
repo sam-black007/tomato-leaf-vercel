@@ -1,9 +1,10 @@
-# Tomato Leaf â€” Vercel deployment (Plant.id + Groq)
+# Tomato Leaf — Vercel deployment (Plant.id + Gemini narrative)
 
 Live: https://tomato-leaf-vercel.vercel.app
 
 Plant.id produces the structured verdict (crop, health, disease, confidence).
-Groq writes the narrative only. Groq can never overwrite the structured fields.
+Gemini (vision) writes the narrative only. The narrative can never overwrite
+the structured fields.
 
 ## Endpoints
 | Route | Method | Purpose |
@@ -16,9 +17,9 @@ Groq writes the narrative only. Groq can never overwrite the structured fields.
 ## Architecture
 - UI is a single self-contained `static/index.html` served by Vercel's CDN.
 - One Python function, `api/index.py`, handles every API route (see `vercel.json`).
-- Plant.id is the **only** engine that looks at pixels. Success is **HTTP 201**,
-  so all 2xx codes are accepted.
-- Groq is the narrative writer and is **text-only** (see below).
+- Plant.id is the **only** engine that looks at pixels for the structured verdict.
+  Success is **HTTP 201**, so all 2xx codes are accepted.
+- Gemini reads the photo for the narrative; Groq is a text-only fallback (see below).
 
 ## Narrative provider
 | Env var | Value |
@@ -79,8 +80,10 @@ Never commit real keys.
 | Variable | Value |
 |---|---|
 | `VISION_API_KEY` | Gemini API key (`AIza...`) |
-| `VISION_BASE_URL` | `https://api.groq.com/openai/v1` |
+| `VISION_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` |
 | `VISION_MODEL` | `gemini-3.5-flash` |
+| `VISION_SUPPORTS_IMAGES` | `1` (Gemini reads the photo) |
+| `VISION_FALLBACK_MODELS` | `gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3-flash-preview` |
 | `PLANT_ID_API_KEY` | your Plant.id API key |
 
 ### Easiest way to set them
@@ -107,9 +110,12 @@ Base64 inflates images by ~33%. Requests above ~2.5 MB are rejected with HTTP
 selected photo in the browser before upload.
 
 ## Known limits
-- `VISION_MODEL` must be a model Groq currently serves. `llama-3.2-90b-vision-preview`
-  was decommissioned.
+- `VISION_MODEL` must be served by the configured provider: Gemini by default,
+  Groq (`https://api.groq.com/openai/v1`) only as a text-only fallback with
+  `VISION_SUPPORTS_IMAGES=0`.
 - Plant.id spends 1 credit for a healthy leaf and 2 for a diseased one.
 - No offline models here: no CLIP gate, no disease probe, no ViT/ResNet
   second opinion, no calibration badges, no local agreement badge. Those live in
   the full local version and the Fly.io container build.
+- CORS allows browser clients: `/api/analyze` answers `OPTIONS` with
+  `Access-Control-Allow-Origin: *`, so the PlantLab webcam can POST from any origin.

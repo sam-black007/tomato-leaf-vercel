@@ -479,8 +479,18 @@ def on_unhandled_error(exc):
     return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
 
 
-@app.route("/api/analyze", methods=["POST"])
+@app.after_request
+def _cors(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return resp
+
+
+@app.route("/api/analyze", methods=["POST", "OPTIONS"])
 def analyze():
+    if request.method == "OPTIONS":
+        return ("", 204)
     try:
         data = request.get_json(silent=True)
         if not isinstance(data, dict) or not data.get("image"):

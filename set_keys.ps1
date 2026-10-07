@@ -1,4 +1,4 @@
-# Adds the two API keys to Vercel as encrypted environment variables.
+# Adds the API keys to Vercel as encrypted environment variables.
 # Keys are read interactively, so they are never stored in this repo or in chat.
 # Usage (from this folder):  powershell -ExecutionPolicy Bypass -File .\set_keys.ps1
 
@@ -14,20 +14,22 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Not logged in to Vercel. Run: vercel.cmd login'
 }
 
-$groq = Read-Host 'Groq API key (gsk_...)'
-if (-not $groq) { throw 'Groq key is required.' }
+$gemini = Read-Host 'Gemini API key (AIza...)'
+if (-not $gemini) { throw 'Gemini key is required.' }
 
 $plantId = Read-Host 'Plant.id API key'
 if (-not $plantId) { throw 'Plant.id key is required.' }
 
-$model = Read-Host 'Groq vision model [llama-3.2-11b-vision-preview]'
-if (-not $model) { $model = 'llama-3.2-11b-vision-preview' }
+$model = Read-Host 'Gemini narrative model [gemini-3.5-flash]'
+if (-not $model) { $model = 'gemini-3.5-flash' }
 
 $vars = @{
-    VISION_API_KEY    = $groq
-    VISION_BASE_URL   = 'https://api.groq.com/openai/v1'
-    VISION_MODEL      = $model
-    PLANT_ID_API_KEY  = $plantId
+    VISION_API_KEY           = $gemini
+    VISION_BASE_URL          = 'https://generativelanguage.googleapis.com/v1beta/openai/'
+    VISION_MODEL             = $model
+    VISION_FALLBACK_MODELS   = 'gemini-3.5-flash,gemini-3.1-flash-lite,gemini-3-flash-preview'
+    VISION_SUPPORTS_IMAGES   = '1'
+    PLANT_ID_API_KEY         = $plantId
 }
 
 foreach ($name in $vars.Keys) {
